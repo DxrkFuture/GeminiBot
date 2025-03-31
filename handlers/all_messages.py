@@ -29,7 +29,8 @@ async def meets_endpoint_requirements(message: Message, endpoint: str) -> bool:
     endpoint_requirements = {
         "google": [message.text, message.caption, message.video, message.document, message.sticker,
                    message.photo, message.voice, message.audio, message.video_note],
-        "openai": [message.text, message.caption, message.photo]
+        "openai": [message.text, message.caption, message.photo],
+        "openwebui": [message.text, message.caption, message.photo]  # Same requirements as OpenAI
     }
 
     if endpoint in endpoint_requirements.keys():
@@ -40,13 +41,21 @@ async def meets_endpoint_requirements(message: Message, endpoint: str) -> bool:
 
 
 async def should_generate_response(message: Message) -> bool:
-    if message.reply_to_message and message.reply_to_message.from_user.id == bot_id:  # If replying to us
+    trigger_keywords = {"эхо", "эхо мысли", "echo", "echo thought"}  # Ключевые слова (нижний регистр)
+    message_text = (await get_message_text(message)).lower()  # Текст сообщения в нижнем регистре
+
+    # Существующие условия
+    if message.reply_to_message and message.reply_to_message.from_user.id == bot_id:
         return True
 
-    if f"@{bot_username}" in await get_message_text(message):  # If mentioned
+    if f"@{bot_username}" in message_text:
         return True
 
-    if message.chat.id == message.from_user.id:  # If in DMs
+    if message.chat.id == message.from_user.id:
+        return True
+
+    # Новое условие: проверка ключевых слов
+    if any(keyword in message_text for keyword in trigger_keywords):
         return True
 
     return False
