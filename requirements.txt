@@ -9,3 +9,4 @@ python-dotenv~=1.0.1
 python-magic~=0.4.27
 requests[socks]~=2.32.3
 tiktoken~=0.8.0
+PyYAML

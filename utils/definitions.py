@@ -385,6 +385,15 @@ chat_configs = {
             "advanced": False,
             "private": False
         },
+        "owui_tools_ids": {
+            "description": "Используемые утилиты из OpenWebUI через запятую: web_search,info_time и другие",
+            "type": "text",
+            "default_value": None,
+            "accepted_values": None,
+            "protected": False,
+            "advanced": True,
+            "private": False
+        },
         "owui_auto_fallback": {
             "description": "Разрешить ли боту автоматически переключаться на Gemini API в случае сбоя эндпоинта OpenWebUI",
             "type": "boolean",
@@ -492,7 +501,8 @@ presets = {
     "owui": {
         "endpoint": "openwebui",
         "max_output_tokens": 4096,
-        "owui_model": "gpt-4",
+        "owui_model": "gpt-4o",
+        "owui_tools_ids": "web_search",
         "owui_vision": True,
         "owui_timeout": 60,
         "owui_temperature": 1.0,

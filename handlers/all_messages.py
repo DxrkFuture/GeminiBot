@@ -15,6 +15,7 @@ import api.openai
 import db
 import handlers.commands.settings_command as settings
 from main import ADMIN_IDS, bot
+from config import config
 from utils import get_message_text
 from .commands.shared import is_allowed_to_alter_memory
 
@@ -97,7 +98,7 @@ async def handle_forced_response(message: Message) -> bool:
             our_message = await message.reply(forced_response)
             await db.save_our_message(message, forced_response, our_message.message_id)
         else:
-            await message.reply("❌ <b>У вас нет доступа к этой команде.</b>")
+            await message.reply(config.messages['error']['access'])
         return True
     return False
 
@@ -108,31 +109,88 @@ async def handle_response(message: Message, output: str) -> None:
             return await message.reply(text, parse_mode=parse_mode)
         except TelegramBadRequest as error:
             return None
-
+    
+    # Извлечение файлов из output
+    files_to_send = []
+    clean_output = output
+    
+    # Парсинг тегов с файлами - более гибкий паттерн
+    import re
+    file_pattern = r'<filename=(?:\{)?(.*?)(?:\})?>([^<]*)</filename(?:=(?:\{)?.*?(?:\})?)?>'
+    matches = re.findall(file_pattern, output, re.DOTALL)
+    
+    for filename, content in matches:
+        # Очистка имени файла и содержимого
+        filename = filename.strip()
+        content = content.strip()
+        files_to_send.append((filename, content))
+        
+        # Ищем полное совпадение для замены
+        full_match_pattern = r'<filename=(?:\{)?' + re.escape(filename) + r'(?:\})?>.*?</filename(?:=(?:\{)?.*?(?:\})?)?>'
+        full_match = re.search(full_match_pattern, output, re.DOTALL)
+        if full_match:
+            clean_output = clean_output.replace(full_match.group(0), '')
+    
+    # Очищаем output от файлов
+    output = clean_output.strip()
+    
     process_markdown = await db.get_chat_parameter(message.chat.id, "process_markdown")
     parse_mode = ParseMode.MARKDOWN if process_markdown else ParseMode.HTML
 
-    our_message = await send_reply(message, output, parse_mode)
+    # Отправляем сначала текстовый ответ, если он есть
+    our_message = None
+    if output:
+        our_message = await send_reply(message, output, parse_mode)
 
-    if not our_message and process_markdown:
-        our_message = await send_reply(message, html.quote(output), ParseMode.HTML)
+        if not our_message and process_markdown:
+            our_message = await send_reply(message, html.quote(output), ParseMode.HTML)
 
-    if not our_message:
-        if len(output) > 2000:
-            chunks = [output[i:i + 1900] for i in range(0, len(output), 1900)]
-            logger.warning(
-                f"Failed to send {len(output)} characters at once. Sending it in {len(chunks)} chunks instead...")
-            for index, chunk in enumerate(chunks):
-                chunk_message = await send_reply(message, chunk, parse_mode)
-                if not chunk_message and process_markdown:
-                    chunk_message = await send_reply(message, html.quote(chunk), ParseMode.HTML)
-                if not chunk_message:
-                    logger.error(f"Failed to send chunk {index} to {message.chat.id}")
-                else:
-                    our_message = chunk_message
-        else:
-            our_message = await send_reply(
-                message, "❌ <b>Telegram почему-то не принимает ответ бота.</b>", ParseMode.HTML)
+        if not our_message:
+            if len(output) > 2000:
+                chunks = [output[i:i + 1900] for i in range(0, len(output), 1900)]
+                logger.warning(
+                    f"Failed to send {len(output)} characters at once. Sending it in {len(chunks)} chunks instead...")
+                for index, chunk in enumerate(chunks):
+                    chunk_message = await send_reply(message, chunk, parse_mode)
+                    if not chunk_message and process_markdown:
+                        chunk_message = await send_reply(message, html.quote(chunk), ParseMode.HTML)
+                    if not chunk_message:
+                        logger.error(f"Failed to send chunk {index} to {message.chat.id}")
+                    else:
+                        our_message = chunk_message
+            else:
+                our_message = await send_reply(
+                    message, config.messages['error']['telegram_send'], ParseMode.HTML)
+
+    # Отправляем файлы после текстового ответа
+    for filename, content in files_to_send:
+        try:
+            # Используем FSInputFile для создания файла вместо BytesIO
+            import tempfile
+            import os
+            from aiogram.types import FSInputFile
+            
+            with tempfile.NamedTemporaryFile(delete=False, mode='w', encoding='utf-8') as temp_file:
+                temp_file.write(content)
+                temp_path = temp_file.name
+            
+            # Создаем FSInputFile из временного файла
+            input_file = FSInputFile(temp_path, filename=filename)
+            
+            # Отправляем файл
+            file_message = await message.reply_document(input_file)
+            
+            # Если это первое сообщение от бота - сохраняем его
+            if not our_message:
+                our_message = file_message
+            
+            # Удаляем временный файл
+            os.unlink(temp_path)
+            
+        except Exception as e:
+            logger.error(f"Failed to send file {filename}: {str(e)}")
+            error_message = config.messages['error']['send_file'].format(filename=filename)
+            await message.reply(error_message, parse_mode=ParseMode.HTML)
 
     if output.startswith("❌"):
         output = ""
@@ -143,7 +201,6 @@ async def handle_response(message: Message, output: str) -> None:
         await db.save_our_message(message, output, our_message.message_id)
     else:
         logger.error(f"Failed to send message to {message.chat.id}")
-
 
 async def try_handle_feedback_response(message: Message) -> bool:
     if not FEEDBACK_TARGET_ID:
@@ -209,9 +266,7 @@ async def handle_new_message(message: Message) -> None:
             return
 
         if await check_rate_limit(message):
-            await message.reply(
-                f"❌ <b>Вы достигли установленного лимита запросов в час. Попробуйте снова через некоторое "
-                f"время.</b>\n<i>Подробнее - в /status</i>")
+            await message.reply(config.messages['error']['rate_limit'])
             return
 
         output = await api.generate_response(message, endpoint)

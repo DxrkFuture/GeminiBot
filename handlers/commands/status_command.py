@@ -8,32 +8,35 @@ import api.openai
 import db
 from main import start_time
 from utils import log_command
+from config import config
 
 
-def format_timedelta(td):
-    total_seconds = int(td.total_seconds())
+def format_timedelta(delta: datetime.timedelta) -> str:
+    total_seconds = int(delta.total_seconds())
     days = total_seconds // 86400
     hours = (total_seconds % 86400) // 3600
     minutes = (total_seconds % 3600) // 60
     seconds = total_seconds % 60
     parts = []
+    
     if days > 0:
-        parts.append(f"{days} дн")
+        parts.append(config.messages['status']['format_timedelta_days'].format(days=days))
     if hours > 0:
-        parts.append(f"{hours} ч")
+        parts.append(config.messages['status']['format_timedelta_hours'].format(hours=hours))
     if minutes > 0:
-        parts.append(f"{minutes} мин")
+        parts.append(config.messages['status']['format_timedelta_minutes'].format(minutes=minutes))
     if seconds > 0 or not parts:
-        parts.append(f"{seconds} сек")
+        parts.append(config.messages['status']['format_timedelta_seconds'].format(seconds=seconds))
+    
     return ', '.join(parts)
 
 
 async def status_command(message: Message):
     if await db.is_blacklisted(message.from_user.id):
-        await message.reply("❌ <b>Вы были внесены в чёрный список бота. Ваши сообщения не обрабатываются.</b>")
+        await message.reply(config.messages['error']['black_list'])
         return
     if await db.is_blacklisted(message.chat.id):
-        await message.reply("❌ <b>Этот чат был внесён в чёрный список бота. Сообщения отсюда не обрабатываются.</b>")
+        await message.reply(config.messages['error']['black_list_chat'])
         return
 
     await log_command(message)
@@ -48,27 +51,32 @@ async def status_command(message: Message):
     request_count = await db.get_request_count(message.chat.id, datetime.timedelta(hours=1))
     uptime = datetime.datetime.now() - start_time
 
-    token_count_text = "⏱ Секунду..." if endpoint == "google" else str(
-        await api.openai.count_tokens(message.chat.id)) + " токенов"
-    quota_text = "не ограничен" if rate_limit == 0 else f"{request_count}/{rate_limit}"
+    status_msg = config.messages['status']['messages']
+    token_count_text = status_msg['tokens_loading'] if endpoint == "google" else f"{await api.openai.count_tokens(message.chat.id)}{status_msg['tokens_suffix']}" # TODO правильное получение названия модели и токенов при использовании OpenWebUI API
+    quota_text = status_msg['unlimited'] if rate_limit == 0 else f"{request_count}/{rate_limit}"
+    
     if request_count >= rate_limit * 0.8 > 0:
-        quota_text = quota_text + " ⚠️"
+        quota_text += f" {status_msg['warning_emoji']}"
 
-    text_to_send = f"""👋 <b>Я тут!</b>
+    text_to_send = f"""{status_msg['title']}
 
-💬 <b>Память:</b> {len(messages)}/{messages_limit} сообщений <i>({token_count_text})</i>
-✨ <b>Модель:</b> <i>{model}</i>
-📊 <b>Лимит запросов в час:</b> <i>{quota_text}</i>
+{status_msg['memory'].format(
+    messages_count=len(messages),
+    messages_limit=messages_limit,
+    token_count=token_count_text
+)}
+{status_msg['model'].format(model_name=model)}
+{status_msg['rate_limit'].format(quota=quota_text)}
 
-🆔 <b>ID чата:</b> <code>{message.chat.id}</code>
-⏱ <b>Аптайм:</b> {format_timedelta(uptime)}
+{status_msg['chat_id'].format(chat_id=message.chat.id)}
+{status_msg['uptime'].format(uptime=format_timedelta(uptime))}
 """
+    
     if random.randint(1, 6) == 3 or request_count >= rate_limit > 0:
-        text_to_send += "\nℹ️ <b>Нужна помощь с ботом?</b> - /feedback"
-
+        text_to_send += f"\n{status_msg['feedback']}"
     reply = await message.reply(text_to_send)
 
     if endpoint == "google":
         token_count_text = await api.google.count_tokens_for_chat(message)
-        text_to_send = text_to_send.replace("⏱ Секунду...", f"{token_count_text} токенов")
+        text_to_send = text_to_send.replace(status_msg['tokens_loading'], f"{token_count_text} {status_msg['tokens_suffix']}")
         await reply.edit_text(text_to_send)

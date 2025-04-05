@@ -3,3 +3,4 @@ from .admin_commands import blacklist_command, directsend_command, prune_command
 from .all_messages import handle_message_edit, handle_new_message
 from .commands import feedback_command, forget_command, help_command, hide_command, preset_command, \
     replace_command, reset_command, set_command, settings_comand, start_command, status_command, system_command
+from .inline import router as inline_router

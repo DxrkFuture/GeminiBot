@@ -8,7 +8,6 @@ import api.openai
 import api.openwebui
 import db
 
-
 async def generate_response(message: Message, endpoint: str) -> str:
     if endpoint == "google":
         return await api.google.generate_response(message)

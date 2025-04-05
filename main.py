@@ -4,14 +4,22 @@ import sys
 from datetime import datetime
 
 import aiogram
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message
+from aiogram.types import (
+    Message,
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
+)
 from dotenv import load_dotenv
 from loguru import logger
+import hashlib
 
 if __name__ == "__main__":
     if os.path.exists(".env"):
@@ -32,6 +40,8 @@ session = AiohttpSession(proxy=proxy)
 bot = Bot(os.getenv("TELEGRAM_TOKEN"),
           default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True), session=session)
 dp = Dispatcher()
+
+router = Router()
 
 ADMIN_IDS = [int(admin_id) for admin_id in os.getenv("ADMIN_IDS").split(", ")]
 adminMessageFilter = F.from_user.id.in_(ADMIN_IDS)
@@ -70,6 +80,7 @@ async def main() -> None:
                           forget_command, replace_command, help_command, system_command, feedback_command,
                           stats_command, handle_message_edit, blacklist_command,
                           unblacklist_command, preset_command, hide_command, dropcaches_command)
+    from handlers.inline import router as inline_router
 
     dp.message.register(directsend_command, Command("directsend"), adminMessageFilter)
     dp.message.register(sql_command, Command("sql"), adminMessageFilter)
@@ -81,6 +92,7 @@ async def main() -> None:
     dp.message.register(dropcaches_command, Command("dropcaches"), adminMessageFilter)
 
     dp.message.register(status_command, Command("status"))
+    dp.include_router(inline_router)
 
     @dp.message(BlacklistFilter())
     @dp.edited_message(BlacklistFilter())

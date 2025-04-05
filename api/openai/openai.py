@@ -177,6 +177,52 @@ async def get_prompt(
     return final_prompt
 
 
+async def generate_inline_response(query_text: str, user_id: int) -> str:
+    """Упрощенная версия для inline без истории через OpenAI"""
+    request_id = random.randint(100000, 999999)
+    logger.info(f"INLINE R: {request_id} | U: {user_id}")
+
+    # Получаем настройки пользователя
+    model = await db.get_chat_parameter(user_id, "o_model") or "gpt-3.5-turbo"
+    temperature = float(await db.get_chat_parameter(user_id, "o_temperature") or 0.7)
+
+    timeout = int(await db.get_chat_parameter(chat_id, "o_timeout"))
+    url = await db.get_chat_parameter(chat_id, "o_url") or OAI_API_URL
+    url = url.rstrip("/") + "/"
+
+    messages = [{
+        "role": "user",
+        "content": query_text
+    }]
+
+    # Добавляем системный промпт если нужно
+    if await db.get_chat_parameter(user_id, "add_system_prompt"):
+        system_prompt_raw = await get_system_prompt()
+        system_prompt = system_prompt_raw.format(
+            chat_type="inline query",
+            chat_title=f"with user {user_id}"
+        )
+        messages.insert(0, {"role": "system", "content": system_prompt})
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            response = await session.post(
+                f"{url}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature
+                },
+                timeout=timeout
+            )
+            data = await response.json()
+            return data['choices'][0]['message']['content']
+    
+    except Exception as e:
+        logger.error(f"Inline error: {str(e)}")
+        return "❌ Ошибка генерации ответа"
+
 async def generate_response(message: Message) -> str:
     request_id = random.randint(100000, 999999)
     user_id = message.from_user.id
