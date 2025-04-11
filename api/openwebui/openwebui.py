@@ -2,7 +2,8 @@ import asyncio
 import os
 import random
 import time
-from typing import List
+from typing import List, Optional
+import traceback
 
 import aiohttp
 from aiogram.types import Message
@@ -24,6 +25,53 @@ OAI_API_URL = os.getenv("OAI_API_URL")
 OAI_ENABLED = os.getenv("OAI_ENABLED")
 
 
+async def generate_inline_response(query_text: str, user_id: int) -> str:
+    """Упрощенная версия для inline-запросов"""
+    request_id = random.randint(100000, 999999)
+    logger.info(f"INLINE R: {request_id} | U: {user_id}")
+
+    try:
+        # Получаем персональные настройки пользователя
+        model = await db.get_chat_parameter(user_id, "owui_model") or "gpt-3.5-turbo"
+        
+        # Преобразуем Decimal в float
+        temperature = float(await db.get_chat_parameter(user_id, "owui_temperature") or 0.7)
+        
+        url = await db.get_chat_parameter(user_id, "owui_url") or OAI_API_URL
+        key = await db.get_chat_parameter(user_id, "owui_key") or OPENAI_API_KEY
+        
+        # Формируем минимальный промпт
+        messages = [{"role": "user", "content": query_text}]
+        
+        # Добавляем системный промпт если нужно
+        if await db.get_chat_parameter(user_id, "add_system_prompt"):
+            system_prompt_content = await get_system_prompt()
+            system_content = system_prompt_content.format(
+                chat_type="inline query",
+                chat_title=f"with user {user_id}"
+            )
+            messages.insert(0, {"role": "system", "content": system_content})
+
+        # Отправка запроса
+        async with aiohttp.ClientSession() as session:
+            response = await session.post(
+                f"{url.rstrip('/')}/api/chat/completions",
+                headers={"Authorization": f"Bearer {key}"},
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature
+                },
+                timeout=15
+            )
+            data = await response.json()
+            return data['choices'][0]['message']['content']
+            
+    except Exception as e:
+        logger.error(f"OpenWebUI inline error: {str(e)}")
+        return "❌ Ошибка генерации через OpenWebUI"
+
+
 async def _send_request(
         messages_list: List[dict],
         url: str,
@@ -36,6 +84,7 @@ async def _send_request(
         presence_penalty: float,
         max_output_tokens: int,
         timeout: int,
+        tool_ids: Optional[List[str]] = None,
 ) -> dict:
     headers = {
         "Content-Type": "application/json",
@@ -55,6 +104,9 @@ async def _send_request(
         data["max_completion_tokens"] = max_output_tokens
         del data["max_tokens"]
 
+    if tool_ids:
+        data["tool_ids"] = tool_ids
+
     logger.info(f"{request_id} | Sending request to {url}")
 
     connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
@@ -64,7 +116,7 @@ async def _send_request(
     async with aiohttp.ClientSession(connector=connector) as session:
         try:
             async with session.post(
-                    f"{url}v1/chat/completions",
+                    f"{url}/api/chat/completions",
                     headers=headers,
                     json=data,
                     timeout=timeout,
@@ -107,6 +159,7 @@ async def get_prompt(
                 "content": system_prompt_template.format(
                     chat_type=chat_type,
                     chat_title=chat_title,
+                    examplefile='' # TODO
                 ),
             }
         )
@@ -137,7 +190,7 @@ async def get_prompt(
             last_role = role
 
     clarify_target_message = await db.get_chat_parameter(
-        trigger_message.chat.id, "o_clarify_target_message"
+        trigger_message.chat.id, "owui_clarify_target_message"
     )
     if system_prompt and system_messages and clarify_target_message:
         final_prompt.append(
@@ -161,7 +214,7 @@ async def get_prompt(
             }
         )
 
-    vision_enabled = await db.get_chat_parameter(trigger_message.chat.id, "o_vision")
+    vision_enabled = await db.get_chat_parameter(trigger_message.chat.id, "owui_vision")
     image = await get_photo(trigger_message, messages_list) if vision_enabled else None
 
     if image:
@@ -173,55 +226,9 @@ async def get_prompt(
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}},
             ],
         }
-
+        
     return final_prompt
 
-
-async def generate_inline_response(query_text: str, user_id: int) -> str:
-    """Упрощенная версия для inline без истории через OpenAI"""
-    request_id = random.randint(100000, 999999)
-    logger.info(f"INLINE R: {request_id} | U: {user_id}")
-
-    # Получаем настройки пользователя
-    model = await db.get_chat_parameter(user_id, "o_model") or "gpt-3.5-turbo"
-    temperature = float(await db.get_chat_parameter(user_id, "o_temperature") or 0.7)
-
-    timeout = int(await db.get_chat_parameter(chat_id, "o_timeout"))
-    url = await db.get_chat_parameter(chat_id, "o_url") or OAI_API_URL
-    url = url.rstrip("/") + "/"
-
-    messages = [{
-        "role": "user",
-        "content": query_text
-    }]
-
-    # Добавляем системный промпт если нужно
-    if await db.get_chat_parameter(user_id, "add_system_prompt"):
-        system_prompt_raw = await get_system_prompt()
-        system_prompt = system_prompt_raw.format(
-            chat_type="inline query",
-            chat_title=f"with user {user_id}"
-        )
-        messages.insert(0, {"role": "system", "content": system_prompt})
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            response = await session.post(
-                f"{url}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "temperature": temperature
-                },
-                timeout=timeout
-            )
-            data = await response.json()
-            return data['choices'][0]['message']['content']
-    
-    except Exception as e:
-        logger.error(f"Inline error: {str(e)}")
-        return "❌ Ошибка генерации ответа"
 
 async def generate_response(message: Message) -> str:
     request_id = random.randint(100000, 999999)
@@ -237,29 +244,34 @@ async def generate_response(message: Message) -> str:
 
     if not OAI_ENABLED or OAI_ENABLED.lower() != "true":
         logger.warning(
-            f"{request_id} | OpenAI endpoint is disabled. Raising NotImplementedError."
+            f"{request_id} | OpenWebUI endpoint is disabled. Raising NotImplementedError."
         )
-        raise NotImplementedError("OpenAI endpoint is disabled globally.")
+        raise NotImplementedError("OpenWebUI endpoint is disabled globally.")
 
     show_errors = await db.get_chat_parameter(chat_id, "show_error_messages")
     append_system_prompt = await db.get_chat_parameter(chat_id, "add_system_prompt")
     add_system_messages = await db.get_chat_parameter(chat_id, "add_system_messages")
 
     messages = await db.get_messages(chat_id)
-    model = await db.get_chat_parameter(chat_id, "o_model")
-    log_prompt = await db.get_chat_parameter(chat_id, "o_log_prompt")
+    model = await db.get_chat_parameter(chat_id, "owui_model")
+    log_prompt = await db.get_chat_parameter(chat_id, "owui_log_prompt")
     prompt = await get_prompt(message, messages, append_system_prompt, add_system_messages)
+    owui_tools_ids_raw = await db.get_chat_parameter(chat_id, "owui_tools_ids")
+    owui_tools_ids = (
+        [tool.strip() for tool in owui_tools_ids_raw.split(",") if tool.strip()]
+        if owui_tools_ids_raw else None
+    )
 
     if log_prompt:
         logger.debug(prompt)
 
     logger.debug(f"{request_id} | Using model {model}")
 
-    timeout = int(await db.get_chat_parameter(chat_id, "o_timeout"))
-    url = await db.get_chat_parameter(chat_id, "o_url") or OAI_API_URL
-    url = url.rstrip("/") + "/"
+    timeout = int(await db.get_chat_parameter(chat_id, "owui_timeout"))
+    url = await db.get_chat_parameter(chat_id, "owui_url") or OAI_API_URL
+    url = url.rstrip("/")
 
-    key = await db.get_chat_parameter(chat_id, "o_key") or OPENAI_API_KEY
+    key = await db.get_chat_parameter(chat_id, "owui_key") or OPENAI_API_KEY
 
     async with simulate_typing(message.chat.id):
         try:
@@ -269,122 +281,89 @@ async def generate_response(message: Message) -> str:
                 key=key,
                 model=model,
                 request_id=request_id,
-                temperature=float(await db.get_chat_parameter(chat_id, "o_temperature")),
-                top_p=float(await db.get_chat_parameter(chat_id, "o_top_p")),
+                temperature=float(await db.get_chat_parameter(chat_id, "owui_temperature")),
+                top_p=float(await db.get_chat_parameter(chat_id, "owui_top_p")),
                 frequency_penalty=float(
-                    await db.get_chat_parameter(chat_id, "o_frequency_penalty")
+                    await db.get_chat_parameter(chat_id, "owui_frequency_penalty")
                 ),
                 presence_penalty=float(
-                    await db.get_chat_parameter(chat_id, "o_presence_penalty")
+                    await db.get_chat_parameter(chat_id, "owui_presence_penalty")
                 ),
                 max_output_tokens=int(
                     await db.get_chat_parameter(chat_id, "max_output_tokens")
                 ),
                 timeout=timeout,
+                **({"tool_ids": owui_tools_ids} if owui_tools_ids else {})
             )
         except asyncio.TimeoutError:
             output = (
-                f"❌ *Превышено время ожидания ответа от эндпоинта OpenAI.*\n"
+                f"❌ *Превышено время ожидания ответа от эндпоинта OpenWebUI.*\n"
                 f"Нынешний таймаут: `{timeout}`"
             )
             return output
         except Exception as e:
             logger.exception(e)
-            output = "❌ *Произошёл неизвестный сбой.*\n\nПожалуйста, попробуйте позже."
+            if show_errors:
+                output = f"❌ *Произошёл неизвестный сбой:*\n`{str(e)}`"
+            else:
+                output = "❌ *Произошёл неизвестный сбой.*\n\nПожалуйста, попробуйте позже."
             return output
 
     try:
-        choice = response["choices"][0]
-        output = choice["message"]["content"]
-        finish_reason = choice.get("finish_reason")
-
-        if finish_reason == "length":
-            output = "❌ *Произошел сбой эндпоинта OpenAI.*"
+        if "error" in response:
+            error_message = response["error"]["message"]
             if show_errors:
-                output += (
-                    "\n\nГенерация была прервана на стороне эндпоинта из-за ограничения "
-                    "`max_output_tokens`"
-                )
+                output = f"❌ *Ошибка OpenWebUI:*\n {error_message}"
+            else:
+                output = "❌ *Произошёл неизвестный сбой.*\n\nПожалуйста, попробуйте позже."
+            return output
 
-        if "oai-proxy-error" in output:
-            logger.warning(f"{request_id} | Response is OAI proxy error.")
+        output = response["choices"][0]["message"]["content"]
+        return output
 
-            new_out = "❌ *Произошел сбой эндпоинта OpenAI.*"
-
-            trigger_words = ["sk-", "AIzaSy"]
-            if show_errors and not any([word in output for word in trigger_words]):
-                new_out += f"\n\n{output}"
-
-            output = new_out
-
-        usage = response.get("usage")
-        if usage:
-            logger.debug(
-                f"{request_id} | Tokens: {usage.get('total_tokens', 'N/A')} total "
-                f"({usage.get('prompt_tokens', 'N/A')} prompt, "
-                f"{usage.get('completion_tokens', 'N/A')} completion)"
-            )
-            await db.statistics.log_generation(
-                chat_id,
-                user_id,
-                "openai",
-                usage.get("prompt_tokens", 0),
-                usage.get("completion_tokens", 0),
-                model,
-            )
-        else:
-            logger.warning(f"{request_id} | No usage information in response.")
-    except (KeyError, IndexError, TypeError) as error:
-        logger.exception(error)
-        output = "❌ *Произошел неопознанный сбой эндпоинта OpenAI.*"
+    except Exception as e:
+        logger.exception(e)
         if show_errors:
-            error_message = response.get("error", {}).get("message", str(error))
-            if not any(word in error_message.lower() for word in ["auth", "key", "sk-"]):
-                output += f"\n\n{error_message}"
-
-    return output
+            output = f"❌ *Не удалось обработать ответ OpenWebUI:*\n`{str(e)}`"
+        else:
+            output = "❌ *Произошёл неизвестный сбой.*\n\nПожалуйста, попробуйте позже."
+        return output
 
 
 @alru_cache(ttl=300)
 async def _get_available_models(url: str, key: str, get_all_models=False) -> List[str]:
-    logger.info(f"Getting available models for {url} - ...{key[-6:]}")
-
-    connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {key}",
     }
 
-    try:
-        async with aiohttp.ClientSession(connector=connector) as session:
+    connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
+
+    async with aiohttp.ClientSession(connector=connector) as session:
+        try:
             async with session.get(
-                    f"{url}v1/models", headers=headers, timeout=5
+                    f"{url}/api/models",
+                    headers=headers,
             ) as response:
                 response_decoded = await response.json()
-
-                allowed_keywords = ["gpt", "o1"]
-                disallowed_keywords = ["realtime"]
-
-                if not get_all_models:
+                if get_all_models:
+                    return [model["id"] for model in response_decoded["data"]]
+                else:
                     return [
-                        entry["id"]
-                        for entry in response_decoded.get("data", [])
-                        if any(kw in entry["id"] for kw in allowed_keywords)
-                           and not any(dkw in entry["id"] for dkw in disallowed_keywords)
+                        model["id"]
+                        for model in response_decoded["data"]
+                        if model["owned_by"] != "anthropic"
                     ]
-
-                return [entry["id"] for entry in response_decoded.get("data", [])]
-    except Exception as e:
-        logger.warning("Failed to get available models.")
-        logger.exception(e)
-        return []
+        except Exception as e:
+            logger.error("Failed to get available models.")
+            logger.exception(e)
+            return []
 
 
 async def get_available_models(message: Message) -> List[str]:
     chat_id = message.chat.id
-    url = await db.get_chat_parameter(chat_id, "o_url") or OAI_API_URL
-    url = url.rstrip("/") + "/"
-
-    key = await db.get_chat_parameter(chat_id, "o_key") or OPENAI_API_KEY
+    url = await db.get_chat_parameter(chat_id, "owui_url") or OAI_API_URL
+    url = url.rstrip("/")
+    key = await db.get_chat_parameter(chat_id, "owui_key") or OPENAI_API_KEY
 
     return await _get_available_models(url, key)

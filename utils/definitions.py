@@ -10,7 +10,7 @@ chat_configs = {
             "description": "Какая система используется ботом для генерации ответов",
             "type": "text",
             "default_value": "\'google\'",
-            "accepted_values": ["google", "openai"] if os.getenv("OAI_ENABLED").lower() == "true" else ["google"],
+            "accepted_values": ["google", "openai", "openwebui"] if os.getenv("OAI_ENABLED").lower() == "true" else ["google"],
             "protected": False,
             "advanced": False,
             "private": False
@@ -356,6 +356,125 @@ chat_configs = {
             "advanced": True,
             "private": False
         }
+    },
+    "openwebui": {
+        "owui_url": {
+            "description": "Ссылка на эндпоинт OpenWebUI, который будет использовать бот. \nБЕЗ /api/chat/completions",
+            "type": "text",
+            "default_value": None,
+            "accepted_values": None,
+            "protected": False,
+            "advanced": False,
+            "private": True
+        },
+        "owui_key": {
+            "description": "Ключ авторизации для эндпоинта OpenWebUI",
+            "type": "text",
+            "default_value": None,
+            "accepted_values": None,
+            "protected": False,
+            "advanced": False,
+            "private": True
+        },
+        "owui_model": {
+            "description": "Используемая ботом модель в OpenWebUI",
+            "type": "text",
+            "default_value": "'gpt-4'",
+            "accepted_values": api.openwebui.get_available_models,
+            "protected": False,
+            "advanced": False,
+            "private": False
+        },
+        "owui_tools_ids": {
+            "description": "Используемые утилиты из OpenWebUI через запятую: web_search,info_time и другие",
+            "type": "text",
+            "default_value": None,
+            "accepted_values": None,
+            "protected": False,
+            "advanced": True,
+            "private": False
+        },
+        "owui_auto_fallback": {
+            "description": "Разрешить ли боту автоматически переключаться на Gemini API в случае сбоя эндпоинта OpenWebUI",
+            "type": "boolean",
+            "default_value": False,
+            "accepted_values": [True, False],
+            "protected": False,
+            "advanced": False,
+            "private": False
+        },
+        "owui_clarify_target_message": {
+            "description": "Добавлять ли дополнительное системное сообщение, чтобы помочь модели понять, на что нужно отвечать",
+            "type": "boolean",
+            "default_value": True,
+            "accepted_values": [True, False],
+            "protected": False,
+            "advanced": True,
+            "private": False
+        },
+        "owui_vision": {
+            "description": "Разрешить ли модели работать с изображениями",
+            "type": "boolean",
+            "default_value": True,
+            "accepted_values": [True, False],
+            "protected": False,
+            "advanced": False,
+            "private": False
+        },
+        "owui_timeout": {
+            "description": "Максимальное время ожидания ответа OpenWebUI",
+            "type": "integer",
+            "default_value": 60,
+            "accepted_values": range(1, 300),
+            "protected": False,
+            "advanced": True,
+            "private": False
+        },
+        "owui_temperature": {
+            "description": "Температура сэмплинга. Чем выше - тем более случайные ответы может вернуть модель",
+            "type": "decimal",
+            "default_value": 1.0,
+            "accepted_values": frange(0, 2, 0.01),
+            "protected": False,
+            "advanced": True,
+            "private": False
+        },
+        "owui_top_p": {
+            "description": "Вероятностный порог для nucleus sampling. Модель рассматривает только токены, чья суммарная вероятность не превышает этот порог",
+            "type": "decimal",
+            "default_value": 1.0,
+            "accepted_values": frange(0, 1, 0.01),
+            "protected": False,
+            "advanced": True,
+            "private": False
+        },
+        "owui_presence_penalty": {
+            "description": "Штраф за повторение тем. Положительные значения поощряют модель говорить о новых темах",
+            "type": "decimal",
+            "default_value": 0.0,
+            "accepted_values": frange(-2, 2, 0.01),
+            "protected": False,
+            "advanced": True,
+            "private": False
+        },
+        "owui_frequency_penalty": {
+            "description": "Штраф за повторение конкретных слов. Положительные значения снижают вероятность повторения одних и тех же фраз",
+            "type": "decimal",
+            "default_value": 0.0,
+            "accepted_values": frange(-2, 2, 0.01),
+            "protected": False,
+            "advanced": True,
+            "private": False
+        },
+        "owui_log_prompt": {
+            "description": "Сохранять ли запросы в логи бота. Полезно при отладке администраторами.",
+            "type": "boolean",
+            "default_value": False,
+            "accepted_values": [True, False],
+            "protected": True,
+            "advanced": True,
+            "private": False
+        }
     }
 }
 
@@ -378,6 +497,22 @@ presets = {
         "o_timeout": 300,
         "o_add_system_messages": False,
         "o_clarify_target_message": False
+    },
+    "owui": {
+        "endpoint": "openwebui",
+        "max_output_tokens": 4096,
+        "owui_model": "gpt-4o",
+        "owui_tools_ids": "web_search",
+        "owui_vision": True,
+        "owui_timeout": 60,
+        "owui_temperature": 1.0,
+        "owui_top_p": 1.0,
+        "owui_presence_penalty": 0.0,
+        "owui_frequency_penalty": 0.0,
+        "owui_clarify_target_message": True,
+        "owui_auto_fallback": False,
+        "add_system_prompt": True,
+        "add_system_messages": True
     }
 }
 

@@ -14,6 +14,7 @@ from main import ADMIN_IDS, bot
 from utils import get_message_text, log_command
 from utils.definitions import chat_configs
 from utils.frange import FloatRange
+from config import config
 
 pending_sets = {
     # user_id: [target_chat_id, target_param, has_notified, notif_message_id]
@@ -89,9 +90,9 @@ async def settings_command(message: Message) -> None:
     available_parameters = await _get_available_parameters(chat_id)
 
     if len(command) == 1:
-        text = "⚙️ <b>Доступные параметры бота:</b> \n"
-
+        text = config.messages['info']['command']['settings']
         have_separated = False
+
         for parameter in available_parameters:
             if available_parameters[parameter]["advanced"] and not show_advanced:
                 continue
@@ -101,31 +102,28 @@ async def settings_command(message: Message) -> None:
                 have_separated = True
 
             current_value = await _get_current_value(chat_id, parameter, available_parameters)
-            text += f"\n<code>{parameter}</code> - {current_value} "
+            text += config.messages['info']['command']['settings_parameter'].format(parameter=parameter, value=current_value)
 
-        text += ("\n\n❔ <b>Для подробностей по параметру:</b> /settings <i>[параметр]</i>\n💾 <b>Установить новое "
-                 "значение:</b> /set <i>[параметр] [значение]</i>")
-
+        text += config.messages['info']['command']['settings_footer']
         await message.reply(text)
     else:
         requested_parameter = command[1].lower()
 
         if requested_parameter not in available_parameters:
-            await message.reply("❌ <b>Неизвестный параметр</b>")
+            await message.reply(config.messages['error']['help_command']['unknown'])
             return
 
         current_value = await _get_current_value(chat_id, requested_parameter, available_parameters)
-
         default_value = available_parameters[requested_parameter]['default_value']
         if isinstance(default_value, str):
             default_value = default_value.replace("'", "")
 
-        text = f"⚙️ <b>Параметр</b> <code>{requested_parameter}</code>:\n"
-        text += f"<i>{available_parameters[requested_parameter]['description']}</i>\n\n"
-        text += "❔ <b>Значения:</b> \n"
-        text += f"<b>Нынешнее: <i>{current_value}</i></b>"
-        if default_value != "None":
-            text += f"\nСтандартное: {default_value}"
+        text = config.messages['info']['command']['settings_detail'].format(
+            parameter=requested_parameter,
+            description=available_parameters[requested_parameter]['description'],
+            current_value=current_value,
+            default_value=default_value if default_value != "None" else "-"
+        )
 
         _value_range = available_parameters[requested_parameter]['accepted_values']
         if isinstance(_value_range, range):
@@ -145,17 +143,18 @@ async def settings_command(message: Message) -> None:
                 accepted_values = "True, False"
 
         if _value_range:
-            text += f"\nДопустимые: {accepted_values}"
+            text += config.messages['info']['command']['settings_accepted_values'].format(accepted_values=accepted_values)
 
         if available_parameters[requested_parameter]["protected"]:
-            text += "\n\n⚠️ <b>Этот параметр защищён - его могут менять только администраторы бота.</b>"
+            text += config.messages['info']['command']['settings_protected']
 
         if len(command) > 2:
-            text += (f"\n\n❓ <b>Обнаружены лишние флаги для команды /settings.</b> Нужно поставить новое "
-                     f"значение? Используйте команду /set:\n <code>{init_text.replace('/settings', '/set', 1)}</code>")
+            text += config.messages['info']['command']['settings_extra_flags'].format(
+                set_command=init_text.replace('/settings', '/set', 1)
+            )
 
         await message.reply(text, disable_web_page_preview=True)
-
+        
 
 async def set_command(message: Message) -> None:
     global pending_sets

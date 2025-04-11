@@ -4,7 +4,7 @@ from loguru import logger
 
 import db
 from main import ADMIN_IDS, bot
-
+from config import config
 
 async def is_allowed_to_alter_memory(message: Message) -> bool:
     if message.from_user.id == message.chat.id:
@@ -30,7 +30,6 @@ async def is_allowed_to_alter_memory(message: Message) -> bool:
     except TelegramBadRequest:
         logger.warning(f"No admin rights in {message.chat.id}")
         if permission_mode in ["owner", "admins"]:
-            await message.reply("⚠️ <b>Бот не является администратором, поэтому не может проверить этого "
-                                "пользователя на наличие прав для изменения памяти бота.</b>")
+            await message.reply(config.messages['warning']['access_check_to_alter_memory'])
             return False
         return True

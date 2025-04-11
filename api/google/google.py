@@ -41,6 +41,173 @@ async def _get_api_key(billing_only=False) -> str:
         logger.error(f"No active {'billing ' if billing_only else ''}API keys available.")
         raise e
 
+# TODO не придумал
+async def generate_inline_response(query_text: str, user_id: int) -> str:
+    """
+    Упрощённая inline-версия вызова Gemini API.
+    Принимает текст запроса и идентификатор пользователя, возвращает сгенерированный ответ.
+    """
+    request_id = random.randint(100000, 999999)
+    logger.info(f"INLINE R: {request_id} | U: {user_id}")
+
+    # Получаем настройки пользователя для Gemini API
+    model_name = await db.get_chat_parameter(user_id, "g_model") or "gemini-1.5-pro-latest"
+    temperature = float(await db.get_chat_parameter(user_id, "g_temperature") or 0.7)
+    top_p = float(await db.get_chat_parameter(user_id, "g_top_p") or 0.9)
+    top_k = int(await db.get_chat_parameter(user_id, "g_top_k") or 40)
+    max_output_tokens = int(await db.get_chat_parameter(user_id, "max_output_tokens") or 256)
+    code_execution = bool(await db.get_chat_parameter(user_id, "g_code_execution") or False)
+    safety_threshold = await db.get_chat_parameter(user_id, "g_safety_threshold") or "medium"
+
+    # Формируем список сообщений; здесь единственное сообщение пользователя
+    messages = [{"role": "user", "content": query_text}]
+
+    # Фиктивное сообщение для передачи в _prepare_prompt.
+    # Минимум: chat.id и from_user.id равны user_id.
+    class DummyChat:
+        id = user_id
+    class DummyUser:
+        id = user_id
+    class DummyMessage:
+        chat = DummyChat()
+        from_user = DummyUser()
+    trigger_message = DummyMessage()
+
+    # Если необходимо добавить системный промпт
+    system_prompt = None
+    if await db.get_chat_parameter(user_id, "add_system_prompt"):
+        system_prompt_content = await get_system_prompt()
+        system_prompt = system_prompt_content.format(
+            chat_type="inline query",
+            chat_title=f"with user {user_id}"
+        )
+
+    # Настройка прокси (если необходимо)
+    if os.getenv("GROUNDING_PROXY_URL") and grounding:
+        connector = ProxyConnector.from_url(os.getenv("GROUNDING_PROXY_URL"))
+    elif os.getenv("PROXY_URL"):
+        connector = ProxyConnector.from_url(os.getenv("PROXY_URL"))
+    else:
+        connector = None
+
+    async with aiohttp.ClientSession(connector=connector) as session:
+        MAX_API_ATTEMPTS = int(os.getenv("MAX_KEY_ROTATION_ATTEMPTS", "3"))
+        censor_evade_attempts = 0
+        bad_key_attempts = 0
+
+        while True:
+            try:
+                key = await key_manager.get_api_key(billing_only=grounding)
+            except Exception as e:
+                logger.error(f"{request_id} | Не удалось получить API ключ: {str(e)}")
+                return "❌ Ошибка: Нет доступных API ключей."
+
+            # Подготавливаем промпт (с учетом истории, если требуется)
+            prompt = await _prepare_prompt(trigger_message, messages, key)
+
+            # Формирование настроек безопасности
+            safety_settings = []
+            for safety_setting in [
+                "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "HARM_CATEGORY_HATE_SPEECH",
+                "HARM_CATEGORY_HARASSMENT",
+                "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "HARM_CATEGORY_CIVIC_INTEGRITY"
+            ]:
+                safety_settings.append({
+                    "category": safety_setting,
+                    "threshold": "BLOCK_" + safety_threshold.upper()
+                })
+
+            data = {
+                "contents": prompt,
+                "safetySettings": safety_settings,
+                "generationConfig": {
+                    "temperature": temperature,
+                    "topP": top_p,
+                    "topK": top_k,
+                    "maxOutputTokens": max_output_tokens,
+                }
+            }
+            if system_prompt:
+                data["system_instruction"] = system_prompt
+
+            if code_execution:
+                data["tools"] = [{'code_execution': {}}]
+
+            if grounding:
+                if "2.0" in model_name:
+                    data["tools"] = [{
+                        "googleSearch": {}
+                    }]
+                else:
+                    data["tools"] = [{
+                        "googleSearchRetrieval": {
+                            "dynamic_retrieval_config": {
+                                "mode": "MODE_DYNAMIC",
+                                "dynamic_threshold": grounding_threshold,
+                            }
+                        }
+                    }]
+
+            headers = {
+                "Content-Type": "application/json",
+                "x-goog-api-key": key
+            }
+
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+            logger.info(f"{request_id} | Generating: key ...{key[-6:]}, model {model_name}")
+
+            async with session.post(url, headers=headers, json=data) as response:
+                try:
+                    decoded_response = await response.json()
+                except aiohttp.ContentTypeError:
+                    logger.error(f"{request_id} Response is not JSON, but {response.content_type}")
+                    logger.debug(await response.text())
+                    return "❌ Ошибка: Ответ сервера не в формате JSON."
+
+                if response.status != 200:
+                    error = decoded_response.get('error', {})
+                    status_code = error.get('status', '')
+                    if status_code:
+                        logger.error(f"{request_id} | Получена ошибка: {status_code} | Key: ...{key[-6:]}")
+                        if status_code == "RESOURCE_EXHAUSTED":
+                            logger.warning(f"{request_id} | Ключ {key[-6:]} исчерпан")
+                            key_manager.timeout_key(key, grounding)
+                            bad_key_attempts += 1
+                            if bad_key_attempts <= MAX_API_ATTEMPTS:
+                                continue
+                        if status_code == "INVALID_ARGUMENT":
+                            retry = False
+                            for detail in error.get('details', []):
+                                reason = detail.get('reason', '')
+                                if reason == 'API_KEY_INVALID':
+                                    key_manager.remove_key_permanently(key, grounding)
+                                    bad_key_attempts += 1
+                                    if bad_key_attempts <= MAX_API_ATTEMPTS:
+                                        retry = True
+                            if retry:
+                                continue
+                    else:
+                        logger.error(f"{request_id} | Неизвестная ошибка: {decoded_response}")
+                    return f"❌ Ошибка Gemini API: {error.get('message', 'Неизвестная ошибка')}"
+
+                if decoded_response.get("promptFeedback", {}).get("blockReason", "") in ["OTHER", "PROHIBITED_CONTENT"]:
+                    logger.warning(f"{request_id} | Запрос заблокирован цензурой")
+                    censor_evade_attempts += 1
+                    if censor_evade_attempts <= 3:
+                        continue
+                    return "❌ Запрос был заблокирован цензурой Gemini API."
+
+                # Если всё прошло успешно, извлекаем текст ответа
+                if "candidates" in decoded_response:
+                    # Логика выбора части ответа может быть усложнена в зависимости от модели
+                    part = 0
+                    output = decoded_response["candidates"][0]["content"]["parts"][part]["text"]
+                    return output.strip()
+                else:
+                    return "❌ Не удалось получить сгенерированный ответ."
+
 
 async def _call_gemini_api(request_id: int, trigger_message: Message, messages: List[Record], system_prompt: dict,
                            model_name: str, temperature: float, top_p: float, top_k: int, max_output_tokens: int,

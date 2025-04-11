@@ -40,13 +40,23 @@ async def preset_command(message: Message):
         blacklisted_prefix = "g_"
     elif endpoint == "google":
         blacklisted_prefix = "o_"
+    elif endpoint == "openwebui":
+        # Block both Google and OpenAI settings for OpenWebUI
+        blacklisted_prefix = "g_"  # Block Google settings
     else:
         raise ValueError("what?")
 
     # Change settings
     changed_params = {}
     for parameter, value in presets[target_preset].items():
-        if parameter.startswith(blacklisted_prefix):
+        # Skip OpenAI and Google settings for OpenWebUI
+        if endpoint == "openwebui" and (parameter.startswith("o_") or parameter.startswith("g_")):
+            continue
+        # Skip Google settings for OpenAI
+        elif endpoint == "openai" and parameter.startswith("g_"):
+            continue
+        # Skip OpenAI settings for Google
+        elif endpoint == "google" and parameter.startswith("o_"):
             continue
 
         if parameter == "endpoint" and message.from_user.id not in ADMIN_IDS:
